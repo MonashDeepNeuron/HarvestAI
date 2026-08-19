@@ -9,8 +9,8 @@ main                        ← always working
 │   └── software-feature/*  ← one branch per feature or task
 └── hardware-dev            ← integration branch for hardware
     └── hardware-feature/*  ← one branch per feature or task
-```
 fix/description             ← bug fixes, branch off whichever dev is relevant
+```
 
 Never commit directly to main. When you start new work, it goes on a feature branch, gets merged into the relevant dev branch first, then into main (Aaron will handle PR accepting).
 
