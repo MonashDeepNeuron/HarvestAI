@@ -3,12 +3,13 @@
 A robotic arm that finds and picks ripe strawberries using a camera and AI. The perception side handles detection and ripeness classification. The hardware side handles the arm, gripper and motion planning.
 
 # Branch structure
+```
 main                        ← always working
 ├── software-dev            ← integration branch for software
 │   └── software-feature/*  ← one branch per feature or task
 └── hardware-dev            ← integration branch for hardware
     └── hardware-feature/*  ← one branch per feature or task
-
+```
 fix/description             ← bug fixes, branch off whichever dev is relevant
 
 Never commit directly to main. When you start new work, it goes on a feature branch, gets merged into the relevant dev branch first, then into main (Aaron will handle PR accepting).
