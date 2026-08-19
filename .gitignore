@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.egg-info/
+
+
+# Environments
+venv/
+.venv/
+env/
+.env
+*.env
+
+# Jupyter / Colab
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Datasets (too large for git)
+data/public/
+data/agriarm-rig/images/
+*.zip
+*.tar.gz
+
+# Junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
