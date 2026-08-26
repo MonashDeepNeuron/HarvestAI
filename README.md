@@ -1,4 +1,4 @@
-# AgriArm
+# HarvestAI
 
 A robotic arm that finds and picks ripe strawberries using a camera and AI. The perception side handles detection and ripeness classification. The hardware side handles the arm, gripper and motion planning.
 
@@ -30,7 +30,7 @@ Hardware / kinematics — Isaac
 
 # Getting started
 ```
-conda create -n agriarm python=3.12 -y
-conda activate agriarm
+conda create -n harvestai python=3.12 -y
+conda activate harvestai
 pip install -r requirements.txt
 ```
