@@ -13,14 +13,14 @@ import numpy as np
 
 # perception/ui/detector.py -> perception/models/
 MODELS_DIR = Path(__file__).resolve().parents[1] / "models"
-DEFAULT_MODEL_PATH = MODELS_DIR / "strawberry_v1.pt"
+DEFAULT_MODEL_PATH = MODELS_DIR / "strawberry_v2.pt"
 
 
 def list_models() -> list[Path]:
     """Every .pt checkpoint sitting in perception/models/, newest name last.
 
-    Sorted so strawberry_v1, strawberry_v2, ... come out in order; the UI picks
-    the last one as the default.
+    Sorted so strawberry_v1, strawberry_v2, ... come out in order. The UI
+    defaults to DEFAULT_MODEL_PATH when it's present, otherwise the last one.
     """
     if not MODELS_DIR.is_dir():
         return []

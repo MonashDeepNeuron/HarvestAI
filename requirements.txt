@@ -1,5 +1,5 @@
 # Core
-ultralytics>=8.3.0
+ultralytics>=8.4.132  # strawberry_v2 is a YOLO26-seg model; older builds can't load it
 opencv-python>=4.10.0
 numpy>=1.26.0
 

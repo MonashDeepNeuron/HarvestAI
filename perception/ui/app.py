@@ -43,8 +43,12 @@ def _model_choices() -> list[tuple[str, str]]:
 
 
 def _default_model() -> str | None:
-    choices = _model_choices()
-    return choices[-1][1] if choices else None
+    """Prefer detector.DEFAULT_MODEL_PATH; fall back to the last checkpoint."""
+    values = [v for _, v in _model_choices()]
+    if not values:
+        return None
+    default = str(DEFAULT_MODEL_PATH)
+    return default if default in values else values[-1]
 
 
 def _summary(count: int, confs: list[float]) -> str:
@@ -116,7 +120,7 @@ def rescan_models(current: str | None = None):
     """
     choices = _model_choices()
     values = [v for _, v in choices]
-    value = current if current in values else (values[-1] if values else None)
+    value = current if current in values else _default_model()
     return gr.update(choices=choices, value=value)
 
 
