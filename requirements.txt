@@ -7,3 +7,7 @@ numpy>=1.26.0
 pyyaml>=6.0
 tqdm>=4.66.0
 matplotlib>=3.8.0
+
+# UI (perception/ui)
+gradio>=4.44.0
+pillow>=10.0.0
