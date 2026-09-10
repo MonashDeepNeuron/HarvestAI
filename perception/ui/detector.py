@@ -7,13 +7,24 @@ other caller) just gets an annotated image plus a list of detections back.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
 
-# perception/ui/detector.py -> perception/models/strawberry_v1.pt
-DEFAULT_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "strawberry_v1.pt"
+# perception/ui/detector.py -> perception/models/
+MODELS_DIR = Path(__file__).resolve().parents[1] / "models"
+DEFAULT_MODEL_PATH = MODELS_DIR / "strawberry_v1.pt"
+
+
+def list_models() -> list[Path]:
+    """Every .pt checkpoint sitting in perception/models/, newest name last.
+
+    Sorted so strawberry_v1, strawberry_v2, ... come out in order; the UI picks
+    the last one as the default.
+    """
+    if not MODELS_DIR.is_dir():
+        return []
+    return sorted(MODELS_DIR.glob("*.pt"))
 
 
 @dataclass
@@ -97,7 +108,16 @@ class StrawberryDetector:
         return DetectionResult(image=annotated_rgb, detections=detections)
 
 
-@lru_cache(maxsize=1)
-def get_detector(model_path: str | None = None) -> StrawberryDetector:
-    """Cached singleton so the UI doesn't reload weights on every request."""
-    return StrawberryDetector(model_path or DEFAULT_MODEL_PATH)
+_DETECTOR_CACHE: dict[str, StrawberryDetector] = {}
+
+
+def get_detector(model_path: str | Path | None = None) -> StrawberryDetector:
+    """Return a detector for the given weights, reusing loaded ones.
+
+    Keeps one StrawberryDetector per checkpoint path so switching models in the
+    UI doesn't re-read weights you've already loaded this session.
+    """
+    key = str(Path(model_path).resolve()) if model_path else str(DEFAULT_MODEL_PATH)
+    if key not in _DETECTOR_CACHE:
+        _DETECTOR_CACHE[key] = StrawberryDetector(key)
+    return _DETECTOR_CACHE[key]
