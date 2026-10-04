@@ -6,10 +6,14 @@ other caller) just gets an annotated image plus a list of detections back.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from ripeness import CLASSES, HARVESTABLE, crop_box_only, crop_instance  # noqa: E402
 
 # perception/ui/detector.py -> perception/models/
 MODELS_DIR = Path(__file__).resolve().parents[1] / "models"
@@ -35,10 +39,17 @@ class Detection:
     y1: float
     x2: float
     y2: float
+    mask: np.ndarray | None = None
+    ripeness: str | None = None
+    ripeness_conf: float | None = None
 
     @property
     def area(self) -> float:
         return max(0.0, self.x2 - self.x1) * max(0.0, self.y2 - self.y1)
+
+    @property
+    def harvestable(self) -> bool:
+        return self.ripeness in HARVESTABLE
 
 
 @dataclass
@@ -49,6 +60,82 @@ class DetectionResult:
     @property
     def count(self) -> int:
         return len(self.detections)
+
+    @property
+    def has_ripeness(self) -> bool:
+        return any(d.ripeness is not None for d in self.detections)
+
+    @property
+    def harvestable(self) -> int:
+        return sum(1 for d in self.detections if d.harvestable)
+
+    def counts(self) -> dict[str, int]:
+        """Per-class tally, in ripeness order, including zeros."""
+        return {c: sum(1 for d in self.detections if d.ripeness == c) for c in CLASSES}
+
+
+# Hardcoded colours for unripe, tunring and ripe strawberries
+RIPENESS_RGB = {
+    "unripe": (80, 200, 80),
+    "turning": (255, 170, 40),
+    "ripe": (230, 40, 60),
+}
+_FALLBACK_RGB = (60, 200, 220)
+
+
+def draw(image: np.ndarray, detections: list[Detection]) -> np.ndarray:
+    """Annotate per-berry ripeness
+    """
+    import cv2
+
+    out = image.copy()
+    s = max(1.0, max(out.shape[:2]) / 640)
+    font_scale = 0.55 * s
+    text_thick = max(1, round(1.4 * s))
+    pad = max(3, round(4 * s))
+
+    for d in detections:
+        rgb = RIPENESS_RGB.get(d.ripeness, _FALLBACK_RGB)
+        if d.mask is not None:
+            tint = np.zeros_like(out)
+            tint[d.mask] = rgb
+            out = cv2.addWeighted(out, 1.0, tint, 0.35, 0)
+        cv2.rectangle(out, (int(d.x1), int(d.y1)), (int(d.x2), int(d.y2)), rgb,
+                      max(2, round((3 if d.harvestable else 2) * s)))
+
+    H, W = out.shape[:2]
+    placed: list[tuple[int, int, int, int]] = []
+
+    for d in detections:
+        rgb = RIPENESS_RGB.get(d.ripeness, _FALLBACK_RGB)
+        if d.ripeness:
+            tag = f"{d.ripeness} {d.ripeness_conf:.0%}" if d.ripeness_conf else d.ripeness
+            if d.harvestable:
+                tag += " PICK"
+        else:
+            tag = f"{d.confidence:.0%}"
+
+        (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_thick)
+        bw, bh = tw + 2 * pad, th + 2 * pad
+
+        tx = min(max(0, int(d.x1)), max(0, W - bw))
+        y1, y2 = int(d.y1), int(d.y2)
+
+        free = None
+        for cy in (y1 - bh, y1, y2 - bh, y2):
+            ty = max(0, min(cy, H - bh))
+            if not any(tx < px + pw and tx + bw > px and ty < py + ph and ty + bh > py
+                       for px, py, pw, ph in placed):
+                free = ty
+                break
+        ty = free if free is not None else max(0, min(y1 - bh, H - bh))
+        placed.append((tx, ty, bw, bh))
+
+        cv2.rectangle(out, (tx, ty), (tx + bw, ty + bh), rgb, -1)
+        cv2.putText(out, tag, (tx + pad, ty + th + pad - 1),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255),
+                    text_thick, cv2.LINE_AA)
+    return out
 
 
 class StrawberryDetector:
@@ -67,7 +154,7 @@ class StrawberryDetector:
         if self._model is None:
             try:
                 from ultralytics import YOLO
-            except ImportError as exc:  # pragma: no cover - env hint only
+            except ImportError as exc:  
                 raise ImportError(
                     "ultralytics is not installed. Run `pip install -r requirements.txt` "
                     "inside the harvestai environment."
@@ -75,13 +162,9 @@ class StrawberryDetector:
             self._model = YOLO(str(self.model_path))
         return self._model
 
-    def detect(self, image: np.ndarray, conf: float = 0.25, iou: float = 0.45) -> DetectionResult:
+    def detect(self, image: np.ndarray, conf: float = 0.25, iou: float = 0.45,
+               ripeness_engine=None) -> DetectionResult:
         """Run detection on a single RGB image.
-
-        Args:
-            image: HxWx3 RGB uint8 array (what Gradio hands us).
-            conf: confidence threshold.
-            iou: NMS IoU threshold.
         """
         if image is None:
             raise ValueError("No image provided")
@@ -91,21 +174,60 @@ class StrawberryDetector:
         results = self.model.predict(source=bgr, conf=conf, iou=iou, verbose=False)
         result = results[0]
 
+        masks = self._masks(result, image.shape[:2])
+
         detections: list[Detection] = []
         if result.boxes is not None:
             xyxy = result.boxes.xyxy.cpu().numpy()
             confs = result.boxes.conf.cpu().numpy()
-            for (x1, y1, x2, y2), c in zip(xyxy, confs):
+            for i, ((x1, y1, x2, y2), c) in enumerate(zip(xyxy, confs)):
                 detections.append(
-                    Detection(float(c), float(x1), float(y1), float(x2), float(y2))
+                    Detection(float(c), float(x1), float(y1), float(x2), float(y2),
+                              mask=masks[i] if masks is not None and i < len(masks) else None)
                 )
 
-        # result.plot() returns a BGR image with boxes + masks already drawn
-        annotated_bgr = result.plot()
-        annotated_rgb = annotated_bgr[:, :, ::-1].copy()
-
         detections.sort(key=lambda d: d.confidence, reverse=True)
+
+        if ripeness_engine is not None and detections:
+            self._classify(image, detections, ripeness_engine)
+            annotated_rgb = draw(image, detections)
+        else:
+            # result.plot() returns a BGR image with boxes + masks already drawn
+            annotated_rgb = result.plot()[:, :, ::-1].copy()
+
         return DetectionResult(image=annotated_rgb, detections=detections)
+
+    @staticmethod
+    def _masks(result, shape: tuple[int, int]) -> list[np.ndarray] | None:
+        """
+        """
+        if getattr(result, "masks", None) is None:
+            return None
+        import cv2
+
+        h, w = shape
+        out = []
+        for poly in result.masks.xy:
+            m = np.zeros((h, w), dtype=np.uint8)
+            if len(poly) >= 3:
+                cv2.fillPoly(m, [np.asarray(poly, dtype=np.int32)], 1)
+            out.append(m.astype(bool))
+        return out
+
+    @staticmethod
+    def _classify(image: np.ndarray, detections: list[Detection], engine) -> None:
+        """
+        """
+        crops = []
+        for d in detections:
+            bc = crop_instance(image, d.mask) if d.mask is not None else None
+            if bc is None:
+                bc = crop_box_only(image, (d.x1, d.y1, d.x2, d.y2))
+            crops.append(bc)
+
+        for d, r in zip(detections, engine.predict(crops)):
+            d.ripeness = r.label
+            d.ripeness_conf = r.confidence
 
 
 _DETECTOR_CACHE: dict[str, StrawberryDetector] = {}

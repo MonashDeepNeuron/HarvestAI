@@ -27,6 +27,7 @@ import cv2
 import numpy as np
 
 from detector import DEFAULT_MODEL_PATH, list_models, get_detector
+from ripeness import COLOUR_RULE_KEY, engine_choices, get_engine
 
 try:
     import gradio as gr
@@ -51,31 +52,62 @@ def _default_model() -> str | None:
     return default if default in values else values[-1]
 
 
-def _summary(count: int, confs: list[float]) -> str:
-    if count == 0:
+def _engine_choices() -> list[tuple[str, str]]:
+    return engine_choices()
+
+
+def _default_engine() -> str:
+    """Start on the colour rule: it is always present and is the baseline."""
+    return COLOUR_RULE_KEY
+
+
+def _headline(result) -> str:
+    n = result.count
+    berries = f"{n} strawberr{'y' if n == 1 else 'ies'}"
+    if not result.has_ripeness:
+        return f"### {berries} detected"
+    return f"### {berries} detected  -  **{result.harvestable} ready to pick**"
+
+
+def _summary(result) -> str:
+    if result.count == 0:
         return "### No strawberries detected\nTry lowering the confidence threshold."
+
+    confs = [d.confidence for d in result.detections]
     avg = sum(confs) / len(confs)
     lines = [
-        f"### {count} strawberr{'y' if count == 1 else 'ies'} detected",
-        f"Average confidence: **{avg:.0%}**  |  Best: **{max(confs):.0%}**  |  Weakest: **{min(confs):.0%}**",
-        "",
-        "| # | Confidence |",
-        "| - | ---------- |",
+        _headline(result),
+        f"Detector confidence: **{avg:.0%}** avg  |  **{max(confs):.0%}** best  |  **{min(confs):.0%}** weakest",
     ]
-    lines += [f"| {i} | {c:.1%} |" for i, c in enumerate(confs, start=1)]
+    if result.has_ripeness:
+        counts = result.counts()
+        lines.append("Ripeness: " + "  |  ".join(
+            f"**{v}** {k}" for k, v in counts.items()))
+        lines += ["", "| # | Ripeness | Ripeness conf. | Detector conf. | Harvest |",
+                  "| - | -------- | -------------- | -------------- | ------- |"]
+        for i, d in enumerate(result.detections, start=1):
+            rc = f"{d.ripeness_conf:.0%}" if d.ripeness_conf is not None else "-"
+            lines.append(f"| {i} | {d.ripeness or '-'} | {rc} | {d.confidence:.1%} | "
+                         f"{'pick' if d.harvestable else 'leave'} |")
+    else:
+        lines += ["", "| # | Confidence |", "| - | ---------- |"]
+        lines += [f"| {i} | {c:.1%} |" for i, c in enumerate(confs, start=1)]
     return "\n".join(lines)
 
 
-def run(image: np.ndarray, conf: float, model_path: str):
+def run(image: np.ndarray, conf: float, model_path: str, engine_key: str):
     """Image tab: full breakdown."""
     if image is None:
         return None, "Upload an image or take a webcam snapshot to start."
     if not model_path:
         return None, "No model selected. Put a .pt file in perception/models/ and refresh."
     detector = get_detector(model_path)
-    result = detector.detect(image, conf=conf)
-    confs = [d.confidence for d in result.detections]
-    return result.image, _summary(result.count, confs)
+    try:
+        engine = get_engine(engine_key)
+    except Exception as exc:
+        return None, f"Ripeness engine failed to load: {type(exc).__name__}: {exc}"
+    result = detector.detect(image, conf=conf, ripeness_engine=engine)
+    return result.image, _summary(result)
 
 
 # Wall-clock time of the last frame we actually ran inference on. The webcam
@@ -85,7 +117,8 @@ def run(image: np.ndarray, conf: float, model_path: str):
 _last_infer_t = 0.0
 
 
-def run_stream(frame: np.ndarray, conf: float, model_path: str, fps: float):
+def run_stream(frame: np.ndarray, conf: float, model_path: str, fps: float,
+               engine_key: str):
     """Live tab: called once per webcam frame, throttled to `fps`."""
     global _last_infer_t
     if frame is None or not model_path:
@@ -103,13 +136,19 @@ def run_stream(frame: np.ndarray, conf: float, model_path: str, fps: float):
         frame = cv2.resize(frame, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA)
 
     try:
-        result = get_detector(model_path).detect(frame, conf=conf)
+        result = get_detector(model_path).detect(
+            frame, conf=conf, ripeness_engine=get_engine(engine_key))
     except Exception as exc:  # surface it instead of a silent blank frame
         return frame, f"⚠️ {type(exc).__name__}: {exc}"
     _last_infer_t = time.monotonic()
 
     n = result.count
-    return result.image, f"### {n} strawberr{'y' if n == 1 else 'ies'} in frame"
+    line = f"### {n} strawberr{'y' if n == 1 else 'ies'} in frame"
+    if result.has_ripeness:
+        counts = result.counts()
+        line += (f"  -  **{result.harvestable} ready to pick**\n\n"
+                 + "  |  ".join(f"**{v}** {k}" for k, v in counts.items()))
+    return result.image, line
 
 
 def rescan_models(current: str | None = None):
@@ -124,7 +163,15 @@ def rescan_models(current: str | None = None):
     return gr.update(choices=choices, value=value)
 
 
-def on_model_change(model_path: str, image: np.ndarray, conf: float):
+def rescan_engines(current: str | None = None):
+    """Rescan engines"""
+    choices = _engine_choices()
+    values = [v for _, v in choices]
+    value = current if current in values else _default_engine()
+    return gr.update(choices=choices, value=value)
+
+
+def on_model_change(model_path: str, image: np.ndarray, conf: float, engine_key: str):
     """Load the newly picked model straight away (so Live doesn't stutter on the
     first frame) and re-run the Image tab on whatever photo is loaded."""
     if not model_path:
@@ -137,7 +184,20 @@ def on_model_change(model_path: str, image: np.ndarray, conf: float):
     gr.Info(f"Loaded {Path(model_path).name}")
     if image is None:
         return gr.skip(), gr.skip()
-    return run(image, conf, model_path)
+    return run(image, conf, model_path, engine_key)
+
+
+def on_engine_change(engine_key: str, image: np.ndarray, conf: float, model_path: str):
+    """Same eager-load treatment for the ripeness engine."""
+    try:
+        engine = get_engine(engine_key)
+    except Exception as exc:
+        gr.Warning(f"{type(exc).__name__}: {exc}")
+        return gr.skip(), gr.skip()
+    gr.Info(f"Ripeness: {engine.name}")
+    if image is None or not model_path:
+        return gr.skip(), gr.skip()
+    return run(image, conf, model_path, engine_key)
 
 
 # Fill the screen without scrolling: use most of the window width, and size the
@@ -164,8 +224,12 @@ def build_ui() -> "gr.Blocks":
                 label="Model", choices=_model_choices(), value=_default_model(),
                 scale=2, min_width=130, container=False,
             )
+            engine_dd = gr.Dropdown(
+                label="Ripeness", choices=_engine_choices(), value=_default_engine(),
+                scale=2, min_width=150, container=False,
+            )
             conf = gr.Slider(
-                0.05, 0.95, value=0.25, step=0.05, label="Confidence", scale=4
+                0.05, 0.95, value=0.25, step=0.05, label="Confidence", scale=3
             )
 
         with gr.Tabs():
@@ -186,7 +250,7 @@ def build_ui() -> "gr.Blocks":
 
                 live_in.stream(
                     run_stream,
-                    [live_in, conf, model_dd, fps],
+                    [live_in, conf, model_dd, fps, engine_dd],
                     [live_out, live_count],
                     stream_every=0.05,
                     concurrency_limit=1,
@@ -206,16 +270,20 @@ def build_ui() -> "gr.Blocks":
                     run_btn = gr.Button("Detect strawberries", variant="primary")
                 summary = gr.Markdown()
 
-                run_btn.click(run, [image_in, conf, model_dd], [image_out, summary])
-                image_in.change(run, [image_in, conf, model_dd], [image_out, summary])
-                conf.release(run, [image_in, conf, model_dd], [image_out, summary])
+                run_btn.click(run, [image_in, conf, model_dd, engine_dd], [image_out, summary])
+                image_in.change(run, [image_in, conf, model_dd, engine_dd], [image_out, summary])
+                conf.release(run, [image_in, conf, model_dd, engine_dd], [image_out, summary])
 
         model_dd.change(
-            on_model_change, [model_dd, image_in, conf], [image_out, summary]
+            on_model_change, [model_dd, image_in, conf, engine_dd], [image_out, summary]
+        )
+        engine_dd.change(
+            on_engine_change, [engine_dd, image_in, conf, model_dd], [image_out, summary]
         )
 
-        live_tab.select(rescan_models, model_dd, model_dd)
-        image_tab.select(rescan_models, model_dd, model_dd)
+        for tab in (live_tab, image_tab):
+            tab.select(rescan_models, model_dd, model_dd)
+            tab.select(rescan_engines, engine_dd, engine_dd)
     return demo
 
 
