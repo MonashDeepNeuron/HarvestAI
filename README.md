@@ -29,8 +29,16 @@ Perception / software — Aaron: aliu0064@student.monash.edu
 Hardware / kinematics — Isaac
 
 # Getting started
+FIRST TIME
 ```
-conda create -n harvestai python=3.12 -y
-conda activate harvestai
-pip install -r requirements.txt
+uv python install
+{Restart terminal}
+uv {Check if working}
+uv pip install requirements.txt
+```
+Subsequent Runs
+```
+uv venv
+{Follow output instructions to enter}
+{Run your scripts etc}
 ```
