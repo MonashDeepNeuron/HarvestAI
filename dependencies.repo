@@ -1,0 +1,3 @@
+# Source dependencies not available through apt.
+# Import from ~/harvest_ws with: vcs import src < src/HarvestAI/dependencies.repos
+repositories: {}

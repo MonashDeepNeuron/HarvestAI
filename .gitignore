@@ -28,3 +28,8 @@ desktop.ini
 # IDE
 .vscode/
 .idea/
+
+# ROS 2 build output (should live in ~/harvest_ws, never in the repo)
+build/
+install/
+log/
