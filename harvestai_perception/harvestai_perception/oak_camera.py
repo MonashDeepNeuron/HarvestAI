@@ -79,6 +79,7 @@ class OakCamera:
                 dai.node.StereoDepth.PresetMode.HIGH_DENSITY
             )
             stereo.setLeftRightCheck(True)
+            stereo.setExtendedDisparity(True)
 
             # Align depth pixels to the RGB camera viewpoint.
             stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)

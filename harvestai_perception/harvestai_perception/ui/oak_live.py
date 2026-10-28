@@ -64,7 +64,7 @@ def main() -> None:
 
             result = detector.detect(
                 rgb,
-                conf=0.25,
+                conf=0.5,
                 ripeness_engine=None,
             )
 

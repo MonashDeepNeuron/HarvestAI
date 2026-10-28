@@ -20,11 +20,19 @@ strawberry_v2.pt shows up without a restart.
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+PACKAGE_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PACKAGE_DIR))
+
+from oak_camera import OakCamera
+from geometry.camera_geometry import CameraIntrinsics, bbox_to_camera
+from geometry.frame_transform import camera_to_frame, inside_working_volume
 
 from detector import DEFAULT_MODEL_PATH, list_models, get_detector
 from ripeness import COLOUR_RULE_KEY, engine_choices, get_engine
@@ -115,6 +123,168 @@ def run(image: np.ndarray, conf: float, model_path: str, engine_key: str):
 # FPS the user picked and gr.skip() everything in between — that keeps the
 # stream from backing up (which is what makes the Live view freeze / go blank).
 _last_infer_t = 0.0
+
+_oak_camera = None
+_oak_intrinsics = None
+_last_oak_infer_t = 0.0
+
+
+def connect_oak():
+    """Connect to OAK-D Pro and enable RGB + aligned depth."""
+    global _oak_camera, _oak_intrinsics
+
+    if _oak_camera is not None:
+        return "### 🟢 OAK-D Pro already connected"
+
+    try:
+        camera = OakCamera(
+            width=640,
+            height=480,
+            fps=15,
+            enable_depth=True,
+        )
+        camera.start()
+
+        fx, fy, cx, cy = camera.get_intrinsics()
+
+        _oak_intrinsics = CameraIntrinsics(
+            fx=fx,
+            fy=fy,
+            cx=cx,
+            cy=cy,
+        )
+        _oak_camera = camera
+
+        return (
+            "### 🟢 OAK-D Pro connected\n"
+            f"`fx={fx:.2f}, fy={fy:.2f}, "
+            f"cx={cx:.2f}, cy={cy:.2f}`"
+        )
+
+    except Exception as exc:
+        _oak_camera = None
+        _oak_intrinsics = None
+        return f"### 🔴 OAK connection failed\n`{type(exc).__name__}: {exc}`"
+
+
+def disconnect_oak():
+    global _oak_camera, _oak_intrinsics
+
+    if _oak_camera is not None:
+        _oak_camera.close()
+
+    _oak_camera = None
+    _oak_intrinsics = None
+
+    return (
+        None,
+        "### ⚪ OAK-D Pro disconnected",
+        [],
+    )
+
+
+def run_oak_stream(
+    conf: float,
+    model_path: str,
+    fps: float,
+    engine_key: str,
+):
+    """Read one OAK RGB-D frame, detect strawberries and calculate 3D position."""
+    global _last_oak_infer_t
+
+    if _oak_camera is None or _oak_intrinsics is None:
+        return gr.skip(), "### ⚪ Connect OAK-D Pro to start", []
+
+    if not model_path:
+        return gr.skip(), "### No model selected", []
+
+    if time.monotonic() - _last_oak_infer_t < 1.0 / max(fps, 0.5):
+        return gr.skip(), gr.skip(), gr.skip()
+
+    try:
+        rgbd = _oak_camera.read_rgbd()
+
+        if rgbd is None:
+            return gr.skip(), gr.skip(), gr.skip()
+
+        rgb, depth_mm = rgbd
+
+        result = get_detector(model_path).detect(
+            rgb,
+            conf=conf,
+            ripeness_engine=get_engine(engine_key),
+        )
+
+        display = result.image.copy()
+
+        rows = []
+
+        for i, detection in enumerate(result.detections, start=1):
+            position = bbox_to_camera(
+                detection.x1,
+                detection.y1,
+                detection.x2,
+                detection.y2,
+                depth_mm,
+                _oak_intrinsics,
+            )
+
+            ripeness_conf = (
+                f"{detection.ripeness_conf:.0%}"
+                if detection.ripeness_conf is not None
+                else "-"
+            )
+
+            if position is None:
+                rows.append([
+                    i,
+                    detection.ripeness or "-",
+                    ripeness_conf,
+                    f"{detection.confidence:.1%}",
+                    "pick" if detection.harvestable else "leave",
+                    "no depth",
+                    "-",
+                    "-",
+                ])
+                continue
+
+            x_c, y_c, z_c = position
+
+            x_f, y_f, z_f = camera_to_frame(
+                x_c,
+                y_c,
+                z_c,
+            )
+
+            inside = inside_working_volume(
+                x_f,
+                y_f,
+                z_f,
+            )
+
+            rows.append([
+                i,
+                detection.ripeness or "-",
+                ripeness_conf,
+                f"{detection.confidence:.1%}",
+                "pick" if detection.harvestable else "leave",
+                f"({x_c:.3f}, {y_c:.3f}, {z_c:.3f})",
+                f"({x_f:.3f}, {y_f:.3f}, {z_f:.3f})",
+                "IN" if inside else "OUT",
+            ])
+
+        _last_oak_infer_t = time.monotonic()
+
+        headline = _headline(result)
+
+        return display, headline, rows
+
+    except Exception as exc:
+        return (
+            gr.skip(),
+            f"### ⚠️ {type(exc).__name__}: {exc}",
+            gr.skip(),
+        )
 
 
 def run_stream(frame: np.ndarray, conf: float, model_path: str, fps: float,
@@ -274,6 +444,100 @@ def build_ui() -> "gr.Blocks":
                 image_in.change(run, [image_in, conf, model_dd, engine_dd], [image_out, summary])
                 conf.release(run, [image_in, conf, model_dd, engine_dd], [image_out, summary])
 
+            with gr.Tab("OAK-D Pro") as oak_tab:
+                with gr.Row():
+                    oak_connect_btn = gr.Button(
+                        "Connect OAK",
+                        variant="primary",
+                    )
+                    oak_disconnect_btn = gr.Button(
+                        "Disconnect",
+                    )
+                    oak_fps = gr.Slider(
+                        0.5,
+                        10,
+                        value=2,
+                        step=0.5,
+                        label="OAK inference FPS",
+                    )
+
+                oak_status = gr.Markdown(
+                    "### ⚪ OAK-D Pro disconnected"
+                )
+
+                with gr.Row(equal_height=True):
+                    oak_out = gr.Image(
+                        label="OAK-D Pro · RGB + Detection",
+                        interactive=False,
+                        elem_classes="pane",
+                    )
+
+                oak_summary = gr.Markdown()
+
+                oak_table = gr.Dataframe(
+                    headers=[
+                        "#",
+                        "Ripeness",
+                        "Ripeness Conf.",
+                        "Detector Conf.",
+                        "Harvest",
+                        "Camera XYZ (m)",
+                        "Frame XYZ (m)",
+                        "Volume",
+                    ],
+                    datatype=[
+                        "number",
+                        "str",
+                        "str",
+                        "str",
+                        "str",
+                        "str",
+                        "str",
+                        "str",
+                    ],
+                    interactive=False,
+                    wrap=True,
+                )
+
+                # Poll the physical OAK camera independently of the browser webcam.
+                oak_timer = gr.Timer(
+                    value=0.2,
+                    active=True,
+                )
+
+                oak_connect_btn.click(
+                    connect_oak,
+                    inputs=None,
+                    outputs=oak_status,
+                )
+
+                oak_disconnect_btn.click(
+                    disconnect_oak,
+                    inputs=None,
+                    outputs=[
+                        oak_out,
+                        oak_status,
+                        oak_table,
+                    ],
+                )
+
+                oak_timer.tick(
+                    run_oak_stream,
+                    inputs=[
+                        conf,
+                        model_dd,
+                        oak_fps,
+                        engine_dd,
+                    ],
+                    outputs=[
+                        oak_out,
+                        oak_summary,
+                        oak_table,
+                    ],
+                    concurrency_limit=1,
+                    show_progress="hidden",
+                )
+
         model_dd.change(
             on_model_change, [model_dd, image_in, conf, engine_dd], [image_out, summary]
         )
@@ -281,7 +545,7 @@ def build_ui() -> "gr.Blocks":
             on_engine_change, [engine_dd, image_in, conf, model_dd], [image_out, summary]
         )
 
-        for tab in (live_tab, image_tab):
+        for tab in (live_tab, image_tab, oak_tab):
             tab.select(rescan_models, model_dd, model_dd)
             tab.select(rescan_engines, engine_dd, engine_dd)
     return demo
