@@ -33,6 +33,7 @@ sys.path.insert(0, str(PACKAGE_DIR))
 from oak_camera import OakCamera
 from geometry.camera_geometry import CameraIntrinsics, bbox_to_camera
 from geometry.frame_transform import camera_to_frame, inside_working_volume
+from visualizer import make_3d_plot
 
 from detector import DEFAULT_MODEL_PATH, list_models, get_detector
 from ripeness import COLOUR_RULE_KEY, engine_choices, get_engine
@@ -140,7 +141,7 @@ def connect_oak():
         camera = OakCamera(
             width=640,
             height=480,
-            fps=15,
+            fps=60,
             enable_depth=True,
         )
         camera.start()
@@ -180,6 +181,7 @@ def disconnect_oak():
         None,
         "### ⚪ OAK-D Pro disconnected",
         [],
+        make_3d_plot([]),
     )
 
 
@@ -188,24 +190,30 @@ def run_oak_stream(
     model_path: str,
     fps: float,
     engine_key: str,
+    auto_update_3d: bool,
 ):
     """Read one OAK RGB-D frame, detect strawberries and calculate 3D position."""
     global _last_oak_infer_t
 
     if _oak_camera is None or _oak_intrinsics is None:
-        return gr.skip(), "### ⚪ Connect OAK-D Pro to start", []
+        return (
+            gr.skip(),
+            "### ⚪ Connect OAK-D Pro to start",
+            [],
+            make_3d_plot([]),
+        )
 
     if not model_path:
-        return gr.skip(), "### No model selected", []
+        return gr.skip(), "### No model selected", [], make_3d_plot([])
 
     if time.monotonic() - _last_oak_infer_t < 1.0 / max(fps, 0.5):
-        return gr.skip(), gr.skip(), gr.skip()
+        return gr.skip(), gr.skip(), gr.skip(), gr.skip()
 
     try:
         rgbd = _oak_camera.read_rgbd()
 
         if rgbd is None:
-            return gr.skip(), gr.skip(), gr.skip()
+            return gr.skip(), gr.skip(), gr.skip(), gr.skip()
 
         rgb, depth_mm = rgbd
 
@@ -218,6 +226,7 @@ def run_oak_stream(
         display = result.image.copy()
 
         rows = []
+        points = []
 
         for i, detection in enumerate(result.detections, start=1):
             position = bbox_to_camera(
@@ -262,6 +271,15 @@ def run_oak_stream(
                 z_f,
             )
 
+            points.append({
+                "id": i,
+                "x": x_f,
+                "y": y_f,
+                "z": z_f,
+                "ripeness": detection.ripeness or "unknown",
+                "inside": inside,
+            })
+
             rows.append([
                 i,
                 detection.ripeness or "-",
@@ -277,12 +295,19 @@ def run_oak_stream(
 
         headline = _headline(result)
 
-        return display, headline, rows
+        plot_update = (
+            make_3d_plot(points)
+            if auto_update_3d
+            else gr.skip()
+        )
+
+        return display, headline, rows, plot_update
 
     except Exception as exc:
         return (
             gr.skip(),
             f"### ⚠️ {type(exc).__name__}: {exc}",
+            gr.skip(),
             gr.skip(),
         )
 
@@ -455,7 +480,7 @@ def build_ui() -> "gr.Blocks":
                     )
                     oak_fps = gr.Slider(
                         0.5,
-                        10,
+                        60,
                         value=2,
                         step=0.5,
                         label="OAK inference FPS",
@@ -471,6 +496,16 @@ def build_ui() -> "gr.Blocks":
                         interactive=False,
                         elem_classes="pane",
                     )
+
+                    oak_plot = gr.Plot(
+                        label="3D Strawberry Positions",
+                        value=make_3d_plot([]),
+                    )
+
+                oak_auto_update = gr.Checkbox(
+                    label="Auto Update 3D",
+                    value=True,
+                )
 
                 oak_summary = gr.Markdown()
 
@@ -518,6 +553,7 @@ def build_ui() -> "gr.Blocks":
                         oak_out,
                         oak_status,
                         oak_table,
+                        oak_plot,
                     ],
                 )
 
@@ -528,11 +564,13 @@ def build_ui() -> "gr.Blocks":
                         model_dd,
                         oak_fps,
                         engine_dd,
+                        oak_auto_update,
                     ],
                     outputs=[
                         oak_out,
                         oak_summary,
                         oak_table,
+                        oak_plot,
                     ],
                     concurrency_limit=1,
                     show_progress="hidden",
