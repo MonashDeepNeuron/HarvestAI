@@ -6,14 +6,12 @@ other caller) just gets an annotated image plus a list of detections back.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ripeness import CLASSES, HARVESTABLE, crop_box_only, crop_instance  # noqa: E402
+from harvestai_perception.ripeness import CLASSES, HARVESTABLE, crop_box_only, crop_instance
 
 # perception/ui/detector.py -> perception/models/
 MODELS_DIR = Path(__file__).resolve().parents[1] / "models"

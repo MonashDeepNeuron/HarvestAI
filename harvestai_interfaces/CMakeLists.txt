@@ -28,6 +28,7 @@ find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/BerryDetection.msg"
+  "msg/BerryDetectionList.msg"
   DEPENDENCIES std_msgs geometry_msgs)
 
 ament_package()

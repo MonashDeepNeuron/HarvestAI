@@ -1,15 +1,21 @@
 """Basic Gradio UI to detect strawberries with the trained YOLO model(s).
 
 Launch:
-    python perception/ui/app.py
+    In ~/harvest_ws do:
+        1. source ~/harvest_ws/src/HarvestAI/.venv/bin/activate (activate venv if not already)
+        2. colcon build
+        3. source install/setup.bash
+        4. python -m harvestai_perception.ui.app (in harvest_ws directory)
 
 Then open the printed local URL (default http://127.0.0.1:7860).
 
 Two tabs:
-  * Live   - (default) streams webcam frames through the model. The "Live FPS"
+  * Live   - (default) streams generic webcam frames through the model. The "Live FPS"
              slider caps how many frames actually get run, so you can match the
              rate to CPU vs GPU (too fast and the stream backs up / goes blank).
   * Image  - upload / webcam snapshot / clipboard, full per-berry breakdown.
+  * Oak-D Pro - same functionality as Live (defult) but for the Oak-D Pro camera with
+                coordinate logging and a detected starwberry visualiser
 
 The model picker and confidence sit in one row up top; the whole thing is meant
 to fit in a single viewport. The picker lists every checkpoint in
@@ -20,22 +26,19 @@ strawberry_v2.pt shows up without a restart.
 from __future__ import annotations
 
 import argparse
-import sys
+
 import time
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-PACKAGE_DIR = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PACKAGE_DIR))
+from harvestai_perception.oak_camera import OakCamera
+from harvestai_perception.geometry.camera_geometry import CameraIntrinsics, bbox_to_camera
+from harvestai_perception.geometry.frame_transform import camera_to_frame, inside_working_volume
 
-from oak_camera import OakCamera
-from geometry.camera_geometry import CameraIntrinsics, bbox_to_camera
-from geometry.frame_transform import camera_to_frame, inside_working_volume
-
-from detector import DEFAULT_MODEL_PATH, list_models, get_detector
-from ripeness import COLOUR_RULE_KEY, engine_choices, get_engine
+from harvestai_perception.detector import DEFAULT_MODEL_PATH, list_models, get_detector
+from harvestai_perception.ripeness import COLOUR_RULE_KEY, engine_choices, get_engine
 
 try:
     import gradio as gr

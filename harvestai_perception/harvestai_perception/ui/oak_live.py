@@ -2,27 +2,12 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import cv2
 
-# Allow this script to import oak_camera.py from the parent package directory.
-PACKAGE_DIR = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PACKAGE_DIR))
-
-from oak_camera import OakCamera  # noqa: E402
-from detector import DEFAULT_MODEL_PATH, get_detector  # noqa: E402
-
-from geometry.camera_geometry import (
-    CameraIntrinsics,
-    bbox_to_camera,
-)
-
-from geometry.frame_transform import (
-    camera_to_frame,
-    inside_working_volume,
-)
+from harvestai_perception.oak_camera import OakCamera
+from harvestai_perception.detector import DEFAULT_MODEL_PATH, get_detector
+from harvestai_perception.geometry.camera_geometry import CameraIntrinsics, bbox_to_camera
+from harvestai_perception.geometry.frame_transform import camera_to_frame, inside_working_volume
 
 def main() -> None:
     print(f"Loading model: {DEFAULT_MODEL_PATH.name}")
