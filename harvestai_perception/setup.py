@@ -24,7 +24,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'perception_node = harvestai_perception.perception_node:main'
+            'perception_node = harvestai_perception.perception_node:main',
+            'perception_ui = harvestai_perception.ui.app:main',
         ],
     },
 )

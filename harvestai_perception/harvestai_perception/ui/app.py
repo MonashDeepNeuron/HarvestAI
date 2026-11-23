@@ -16,6 +16,8 @@ Two tabs:
   * Image  - upload / webcam snapshot / clipboard, full per-berry breakdown.
   * Oak-D Pro - same functionality as Live (defult) but for the Oak-D Pro camera with
                 coordinate logging and a detected starwberry visualiser
+  * ROS    - shows live perception_node output (berries + image) over ROS 2.
+             Start everything with: ros2 launch harvestai_bringup harvest.launch.py
 
 The model picker and confidence sit in one row up top; the whole thing is meant
 to fit in a single viewport. The picker lists every checkpoint in
@@ -290,6 +292,40 @@ def run_oak_stream(
         )
 
 
+
+def run_ros_stream():
+    """ROS tab: show the latest output of perception_node (no camera opened here)."""
+    from harvestai_perception.ui.ros_bridge import RIPENESS_NAMES, get_listener
+
+    try:
+        berries, image = get_listener().latest()
+    except Exception as exc:
+        return gr.skip(), f"### 🔴 ROS not available\n`{type(exc).__name__}: {exc}`", gr.skip()
+
+    if berries is None:
+        return gr.skip(), "### ⚪ Waiting for /berries from perception_node…", []
+
+    rows = []
+    for i, b in enumerate(berries.berry_detection_list, start=1):
+        x_c, y_c, z_c = b.position.x, b.position.y, b.position.z
+        x_f, y_f, z_f = camera_to_frame(x_c, y_c, z_c)
+        ripeness = RIPENESS_NAMES.get(b.ripeness, "unknown")
+        rows.append([
+            i,
+            ripeness,
+            f"{b.ripeness_confidence:.0%}",
+            f"{b.confidence:.1%}",
+            "pick" if ripeness == "ripe" else "leave",
+            f"({x_c:.3f}, {y_c:.3f}, {z_c:.3f})",
+            f"({x_f:.3f}, {y_f:.3f}, {z_f:.3f})",
+            "IN" if inside_working_volume(x_f, y_f, z_f) else "OUT",
+        ])
+
+    n = len(rows)
+    headline = (f"### 🟢 {n} strawberr{'y' if n == 1 else 'ies'} from ROS "
+                f"(`{berries.header.frame_id}`)")
+    return (image if image is not None else gr.skip()), headline, rows
+
 def run_stream(frame: np.ndarray, conf: float, model_path: str, fps: float,
                engine_key: str):
     """Live tab: called once per webcam frame, throttled to `fps`."""
@@ -447,6 +483,37 @@ def build_ui() -> "gr.Blocks":
                 image_in.change(run, [image_in, conf, model_dd, engine_dd], [image_out, summary])
                 conf.release(run, [image_in, conf, model_dd, engine_dd], [image_out, summary])
 
+            with gr.Tab("ROS") as ros_tab:
+                gr.Markdown(
+                    "Shows live output from `perception_node` "
+                    "(`ros2 launch harvestai_bringup harvest.launch.py`). "
+                    "The camera is owned by the node, so don't press Connect on the OAK tab."
+                )
+                with gr.Row(equal_height=True):
+                    ros_out = gr.Image(
+                        label="perception_node · berries/image",
+                        interactive=False,
+                        elem_classes="pane",
+                    )
+                ros_summary = gr.Markdown()
+                ros_table = gr.Dataframe(
+                    headers=[
+                        "#", "Ripeness", "Ripeness Conf.", "Detector Conf.", "Harvest",
+                        "Camera XYZ (m)", "Frame XYZ (m)", "Volume",
+                    ],
+                    datatype=["number"] + ["str"] * 7,
+                    interactive=False,
+                    wrap=True,
+                )
+                ros_timer = gr.Timer(value=0.2, active=True)
+                ros_timer.tick(
+                    run_ros_stream,
+                    inputs=None,
+                    outputs=[ros_out, ros_summary, ros_table],
+                    concurrency_limit=1,
+                    show_progress="hidden",
+                )
+
             with gr.Tab("OAK-D Pro") as oak_tab:
                 with gr.Row():
                     oak_connect_btn = gr.Button(
@@ -559,7 +626,8 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--share", action="store_true", help="Create a public Gradio link")
-    args = parser.parse_args()
+    # parse_known_args: ros2 launch appends --ros-args ...
+    args, _ = parser.parse_known_args()
 
     if not list_models():
         print(

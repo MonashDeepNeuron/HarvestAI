@@ -13,8 +13,8 @@ import numpy as np
 
 from harvestai_perception.ripeness import CLASSES, HARVESTABLE, crop_box_only, crop_instance
 
-# perception/ui/detector.py -> perception/models/
-MODELS_DIR = Path(__file__).resolve().parents[1] / "models"
+# harvestai_perception/detector.py -> harvestai_perception/models/
+MODELS_DIR = Path(__file__).resolve().parent / "models"
 DEFAULT_MODEL_PATH = MODELS_DIR / "strawberry_v2.pt"
 
 
