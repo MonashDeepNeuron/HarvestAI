@@ -9,7 +9,8 @@ from dataclasses import dataclass
 class FrameConfig:
     """Physical HarvestAI frame dimensions in metres."""
 
-    height: float = 0.22
+    # Inner usable volume is 16 cm x 16 cm x 44 cm tall.
+    height: float = 0.44
 
     # Inner usable square is 16 cm x 16 cm.
     inner_half_width: float = 0.08
@@ -19,7 +20,7 @@ class FrameConfig:
     # camera optical centre is at the top-centre of the frame.
     camera_x: float = 0.0
     camera_y: float = 0.0
-    camera_z: float = 0.22
+    camera_z: float = 0.44  # keep equal to `height` while the camera sits on top
 
 
 DEFAULT_FRAME = FrameConfig()

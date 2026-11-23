@@ -15,16 +15,16 @@ def make_3d_plot(points):
     hy = cfg.inner_half_length
     h = cfg.height
 
-    # Larger virtual visualization cube: 30 x 30 x 30 cm.
-    outer_half = 0.15
-    outer_center_z = h / 2
-
-    outer_z_min = outer_center_z - outer_half
-    outer_z_max = outer_center_z + outer_half
+    # Plot area = working volume plus a margin on every side, so berries just
+    # outside the frame are still visible (drawn as diamonds, labelled OUT).
+    margin = 0.06
+    x_lo, x_hi = -hx - margin, hx + margin
+    y_lo, y_hi = -hy - margin, hy + margin
+    z_lo, z_hi = -margin, h + margin
 
     fig = go.Figure()
 
-    # Draw the 16 x 16 x 22 cm working-volume wireframe.
+    # Draw the working-volume wireframe (16 x 16 x 44 cm by default).
     xs, ys, zs = [], [], []
 
     def add_edge(a, b):
@@ -50,7 +50,7 @@ def make_3d_plot(points):
         hoverinfo="skip",
     ))
 
-    # Draw the outer 30 x 30 x 30 cm visualization boundary.
+    # Draw the outer visualization boundary (working volume + margin).
     outer_xs, outer_ys, outer_zs = [], [], []
 
     def add_outer_edge(a, b):
@@ -58,23 +58,17 @@ def make_3d_plot(points):
         outer_ys.extend([a[1], b[1], None])
         outer_zs.extend([a[2], b[2], None])
 
-    lo = -outer_half
-    hi = outer_half
-
     # Top and bottom faces
-    for z in (outer_z_min, outer_z_max):
-        for y in (lo, hi):
-            add_outer_edge((lo, y, z), (hi, y, z))
-        for x in (lo, hi):
-            add_outer_edge((x, lo, z), (x, hi, z))
+    for z in (z_lo, z_hi):
+        for y in (y_lo, y_hi):
+            add_outer_edge((x_lo, y, z), (x_hi, y, z))
+        for x in (x_lo, x_hi):
+            add_outer_edge((x, y_lo, z), (x, y_hi, z))
 
     # Four vertical edges
-    for x in (lo, hi):
-        for y in (lo, hi):
-            add_outer_edge(
-                (x, y, outer_z_min),
-                (x, y, outer_z_max),
-            )
+    for x in (x_lo, x_hi):
+        for y in (y_lo, y_hi):
+            add_outer_edge((x, y, z_lo), (x, y, z_hi))
 
     fig.add_trace(go.Scatter3d(
         x=outer_xs,
@@ -90,12 +84,13 @@ def make_3d_plot(points):
     ))
 
     # Direction labels near the top of the outer cube
-    d = outer_half - 0.025
-    label_z = outer_z_max - 0.015
+    dx = x_hi - 0.025
+    dy = y_hi - 0.025
+    label_z = z_hi - 0.015
 
     fig.add_trace(go.Scatter3d(
-        x=[-d, d, 0, 0],
-        y=[0, 0, d, -d],
+        x=[-dx, dx, 0, 0],
+        y=[0, 0, dy, -dy],
         z=[label_z] * 4,
 
         mode="text",
@@ -176,17 +171,23 @@ def make_3d_plot(points):
         scene=dict(
             xaxis=dict(
                 title="X (m)",
-                range=[-outer_half, outer_half],
+                range=[x_lo, x_hi],
             ),
             yaxis=dict(
                 title="Y (m)",
-                range=[-outer_half, outer_half],
+                range=[y_lo, y_hi],
             ),
             zaxis=dict(
                 title="Z (m)",
-                range=[outer_z_min, outer_z_max],
+                range=[z_lo, z_hi],
             ),
-            aspectmode="cube",
+            # True proportions, so the tall frame looks tall.
+            aspectmode="manual",
+            aspectratio=dict(
+                x=(x_hi - x_lo) / (z_hi - z_lo),
+                y=(y_hi - y_lo) / (z_hi - z_lo),
+                z=1,
+            ),
         ),
     )
 
@@ -205,7 +206,7 @@ if __name__ == "__main__":
             "id": 4,
             "x": 0.12,
             "y": 0.03,
-            "z": 0.06,
+            "z": 0.30,
             "ripeness": "ripe",
             "inside": False,
         },
