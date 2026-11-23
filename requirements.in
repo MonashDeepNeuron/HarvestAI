@@ -17,3 +17,4 @@ matplotlib>=3.8.0
 # UI (perception/ui)
 gradio>=4.44.0
 pillow>=10.0.0
+plotly>=6.0.0

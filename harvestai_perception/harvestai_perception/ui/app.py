@@ -39,6 +39,8 @@ from harvestai_perception.oak_camera import OakCamera
 from harvestai_perception.geometry.camera_geometry import CameraIntrinsics, bbox_to_camera
 from harvestai_perception.geometry.frame_transform import camera_to_frame, inside_working_volume
 
+from harvestai_perception.ui.visualizer import make_3d_plot
+
 from harvestai_perception.detector import DEFAULT_MODEL_PATH, list_models, get_detector
 from harvestai_perception.ripeness import COLOUR_RULE_KEY, engine_choices, get_engine
 
@@ -145,7 +147,7 @@ def connect_oak():
         camera = OakCamera(
             width=640,
             height=480,
-            fps=15,
+            fps=60,
             enable_depth=True,
         )
         camera.start()
@@ -185,6 +187,7 @@ def disconnect_oak():
         None,
         "### ⚪ OAK-D Pro disconnected",
         [],
+        make_3d_plot([]),
     )
 
 
@@ -193,24 +196,30 @@ def run_oak_stream(
     model_path: str,
     fps: float,
     engine_key: str,
+    auto_update_3d: bool,
 ):
     """Read one OAK RGB-D frame, detect strawberries and calculate 3D position."""
     global _last_oak_infer_t
 
     if _oak_camera is None or _oak_intrinsics is None:
-        return gr.skip(), "### ⚪ Connect OAK-D Pro to start", []
+        return (
+            gr.skip(),
+            "### ⚪ Connect OAK-D Pro to start",
+            [],
+            make_3d_plot([]),
+        )
 
     if not model_path:
-        return gr.skip(), "### No model selected", []
+        return gr.skip(), "### No model selected", [], make_3d_plot([])
 
     if time.monotonic() - _last_oak_infer_t < 1.0 / max(fps, 0.5):
-        return gr.skip(), gr.skip(), gr.skip()
+        return gr.skip(), gr.skip(), gr.skip(), gr.skip()
 
     try:
         rgbd = _oak_camera.read_rgbd()
 
         if rgbd is None:
-            return gr.skip(), gr.skip(), gr.skip()
+            return gr.skip(), gr.skip(), gr.skip(), gr.skip()
 
         rgb, depth_mm = rgbd
 
@@ -223,6 +232,7 @@ def run_oak_stream(
         display = result.image.copy()
 
         rows = []
+        points = []
 
         for i, detection in enumerate(result.detections, start=1):
             position = bbox_to_camera(
@@ -267,6 +277,15 @@ def run_oak_stream(
                 z_f,
             )
 
+            points.append({
+                "id": i,
+                "x": x_f,
+                "y": y_f,
+                "z": z_f,
+                "ripeness": detection.ripeness or "unknown",
+                "inside": inside,
+            })
+
             rows.append([
                 i,
                 detection.ripeness or "-",
@@ -282,34 +301,52 @@ def run_oak_stream(
 
         headline = _headline(result)
 
-        return display, headline, rows
+        plot_update = (
+            make_3d_plot(points)
+            if auto_update_3d
+            else gr.skip()
+        )
+
+        return display, headline, rows, plot_update
 
     except Exception as exc:
         return (
             gr.skip(),
             f"### ⚠️ {type(exc).__name__}: {exc}",
             gr.skip(),
+            gr.skip(),
         )
 
 
 
-def run_ros_stream():
+_last_ros_plot_stamp = None
+
+
+def run_ros_stream(auto_update_3d: bool = True):
     """ROS tab: show the latest output of perception_node (no camera opened here)."""
+    global _last_ros_plot_stamp
     from harvestai_perception.ui.ros_bridge import RIPENESS_NAMES, get_listener
 
     try:
         berries, image = get_listener().latest()
     except Exception as exc:
-        return gr.skip(), f"### 🔴 ROS not available\n`{type(exc).__name__}: {exc}`", gr.skip()
+        return (gr.skip(), f"### 🔴 ROS not available\n`{type(exc).__name__}: {exc}`",
+                gr.skip(), gr.skip())
 
     if berries is None:
-        return gr.skip(), "### ⚪ Waiting for /berries from perception_node…", []
+        return gr.skip(), "### ⚪ Waiting for /berries from perception_node…", [], gr.skip()
 
     rows = []
+    points = []
     for i, b in enumerate(berries.berry_detection_list, start=1):
         x_c, y_c, z_c = b.position.x, b.position.y, b.position.z
         x_f, y_f, z_f = camera_to_frame(x_c, y_c, z_c)
         ripeness = RIPENESS_NAMES.get(b.ripeness, "unknown")
+        inside = inside_working_volume(x_f, y_f, z_f)
+        points.append({
+            "id": i, "x": x_f, "y": y_f, "z": z_f,
+            "ripeness": ripeness, "inside": inside,
+        })
         rows.append([
             i,
             ripeness,
@@ -318,13 +355,22 @@ def run_ros_stream():
             "pick" if ripeness == "ripe" else "leave",
             f"({x_c:.3f}, {y_c:.3f}, {z_c:.3f})",
             f"({x_f:.3f}, {y_f:.3f}, {z_f:.3f})",
-            "IN" if inside_working_volume(x_f, y_f, z_f) else "OUT",
+            "IN" if inside else "OUT",
         ])
+
+    # Only redraw the 3D plot when a new /berries message arrives, so the plot
+    # doesn't reset the camera angle every timer tick.
+    stamp = (berries.header.stamp.sec, berries.header.stamp.nanosec)
+    if auto_update_3d and stamp != _last_ros_plot_stamp:
+        _last_ros_plot_stamp = stamp
+        plot_update = make_3d_plot(points)
+    else:
+        plot_update = gr.skip()
 
     n = len(rows)
     headline = (f"### 🟢 {n} strawberr{'y' if n == 1 else 'ies'} from ROS "
                 f"(`{berries.header.frame_id}`)")
-    return (image if image is not None else gr.skip()), headline, rows
+    return (image if image is not None else gr.skip()), headline, rows, plot_update
 
 def run_stream(frame: np.ndarray, conf: float, model_path: str, fps: float,
                engine_key: str):
@@ -495,6 +541,11 @@ def build_ui() -> "gr.Blocks":
                         interactive=False,
                         elem_classes="pane",
                     )
+                    ros_plot = gr.Plot(
+                        label="3D Strawberry Positions",
+                        value=make_3d_plot([]),
+                    )
+                ros_auto_update = gr.Checkbox(label="Auto Update 3D", value=True)
                 ros_summary = gr.Markdown()
                 ros_table = gr.Dataframe(
                     headers=[
@@ -508,8 +559,8 @@ def build_ui() -> "gr.Blocks":
                 ros_timer = gr.Timer(value=0.2, active=True)
                 ros_timer.tick(
                     run_ros_stream,
-                    inputs=None,
-                    outputs=[ros_out, ros_summary, ros_table],
+                    inputs=[ros_auto_update],
+                    outputs=[ros_out, ros_summary, ros_table, ros_plot],
                     concurrency_limit=1,
                     show_progress="hidden",
                 )
@@ -525,7 +576,7 @@ def build_ui() -> "gr.Blocks":
                     )
                     oak_fps = gr.Slider(
                         0.5,
-                        10,
+                        60,
                         value=2,
                         step=0.5,
                         label="OAK inference FPS",
@@ -541,6 +592,16 @@ def build_ui() -> "gr.Blocks":
                         interactive=False,
                         elem_classes="pane",
                     )
+
+                    oak_plot = gr.Plot(
+                        label="3D Strawberry Positions",
+                        value=make_3d_plot([]),
+                    )
+
+                oak_auto_update = gr.Checkbox(
+                    label="Auto Update 3D",
+                    value=True,
+                )
 
                 oak_summary = gr.Markdown()
 
@@ -588,6 +649,7 @@ def build_ui() -> "gr.Blocks":
                         oak_out,
                         oak_status,
                         oak_table,
+                        oak_plot,
                     ],
                 )
 
@@ -598,11 +660,13 @@ def build_ui() -> "gr.Blocks":
                         model_dd,
                         oak_fps,
                         engine_dd,
+                        oak_auto_update,
                     ],
                     outputs=[
                         oak_out,
                         oak_summary,
                         oak_table,
+                        oak_plot,
                     ],
                     concurrency_limit=1,
                     show_progress="hidden",
